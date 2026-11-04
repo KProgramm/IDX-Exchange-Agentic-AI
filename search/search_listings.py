@@ -113,13 +113,22 @@ def money(value):
     return f"${value:,.0f}" if value is not None else "n/a"
 
 
+def format_address(row):
+    """'123 Main St, Irvine, CA 92618', leaving out any part that is NULL."""
+    state_zip = " ".join(str(row[k]) for k in ("L_State", "L_Zip") if row.get(k))
+    parts = [str(row[k]) for k in ("L_Address", "L_City") if row.get(k)]
+    if state_zip:
+        parts.append(state_zip)
+    return ", ".join(parts) or "Address n/a"
+
+
 def format_property_card(row):
     """One active listing as a short text card."""
     hoa = f"{money(row['AssociationFee'])}/mo" if row["AssociationFee"] is not None else "none listed"
     pool = "yes" if row["PoolPrivateYN"] == "1" else "no"
     sqft = f"{row['LM_Int2_3']:,}" if row["LM_Int2_3"] is not None else "n/a"
     return (
-        f"{row['L_Address']}, {row['L_City']}, {row['L_State']} {row['L_Zip']}\n"
+        f"{format_address(row)}\n"
         f"  Price: {money(row['L_SystemPrice'])} | {row['L_Keyword2']} bd / {row['LM_Dec_3']} ba | {sqft} sqft\n"
         f"  Type: {row['L_Type_']} | HOA: {hoa} | Days on market: {row['DaysOnMarket']}\n"
         f"  Pool: {pool} | Photos: {row['PhotoCount']}"
