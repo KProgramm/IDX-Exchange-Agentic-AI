@@ -49,13 +49,16 @@ def _num(value, digits=None):
     return int(value) if digits == 0 else value
 
 
-def _no_data(city, subtype, months, what="sales"):
+def _no_data(city, subtype, months, what="sales", covered=None):
+    """`covered` is the months of data the table really has; when known, the message uses it, not `months`."""
+    window = f"{covered} months of data" if covered is not None else f"{months} months"
     return {
         "has_data": False,
         "city": city,
         "property_subtype": subtype,
-        "months": months,
-        "message": f"No {subtype} {what} found for '{city}' in the last {months} months.",
+        "months": covered if covered is not None else months,
+        "months_requested": months,
+        "message": f"No {subtype} {what} found for '{city}' in the last {window}.",
     }
 
 
@@ -65,12 +68,14 @@ def _clean_city(city):
 
 def _data_window(months):
     """
-    Return (start, end, months_covered) for the sold-data window, or None if there is no data.
+    Return (start, end, months_covered, data_start) for the sold-data window, or None if there is no data.
 
     `end` is the newest sale on or before today, not today itself: the sold data stops at a
     fixed date, and the table has a few typo dates (2028, 2072) that must be ignored.
     `start` is exclusive. `months_covered` is how many months of data the window really has,
-    which is less than `months` when the table doesn't go back that far.
+    which is less than `months` when the table doesn't go back that far. `data_start` is the date
+    the data in the window really begins (`start`, or the first sale if the table starts later):
+    use it, not `start`, anywhere a date range is shown to a person.
     """
     rows = query(
         "SELECT MIN(CloseDate) AS first_sale, MAX(CloseDate) AS last_sale "
@@ -81,7 +86,7 @@ def _data_window(months):
     first, last = pd.Timestamp(rows[0]["first_sale"]), pd.Timestamp(rows[0]["last_sale"])
     start = last - pd.DateOffset(months=int(months))
     covered = (last - max(start, first)).days / 30.44
-    return str(start.date()), str(last.date()), round(covered, 1)
+    return str(start.date()), str(last.date()), round(covered, 1), str(max(start, first).date())
 
 
 # Shared filters. City / subtype / dates always arrive as %s parameters.
@@ -113,7 +118,7 @@ def city_summary(city, property_subtype=DEFAULT_SUBTYPE, months=12, zip_code=Non
     window = _data_window(months) if city and (zip_code or not zip_raw) else None
     if window is None:
         return _no_data(city, property_subtype, months)
-    start, end, covered = window
+    start, end, covered, data_start = window
 
     where, params = _sold_filter(city, property_subtype, start, end, zip_code)
     # We pull the columns and aggregate in pandas rather than in SQL: MySQL has no MEDIAN(),
@@ -124,7 +129,7 @@ def city_summary(city, property_subtype=DEFAULT_SUBTYPE, months=12, zip_code=Non
         params,
     )
     if not rows:
-        return _no_data(city, property_subtype, months)
+        return _no_data(city, property_subtype, months, covered=covered)
 
     df = pd.DataFrame(rows).astype(float)
     # Every divisor is guarded: no price/sqft without sqft, no ratio without a list price.
@@ -140,9 +145,11 @@ def city_summary(city, property_subtype=DEFAULT_SUBTYPE, months=12, zip_code=Non
         "property_type": PROPERTY_TYPE,
         "property_subtype": property_subtype,
         "zip_code": zip_code,
-        "months": months,
+        "months": covered,  # months of data in the window; never the requested figure
+        "months_requested": months,
         "months_covered": covered,
-        "window_start": start,
+        "window_start": start,  # exclusive bound used in the SQL; may be earlier than the data
+        "data_start": data_start,  # where the data really begins: the date to show people
         "window_end": end,
         "sold_count": int(len(df)),
         "avg_close_price": _num(df["ClosePrice"].mean(), 0),
@@ -167,7 +174,7 @@ def price_trend(city, property_subtype=DEFAULT_SUBTYPE, months=24, zip_code=None
     window = _data_window(months) if city and (zip_code or not zip_raw) else None
     if window is None:
         return _no_data(city, property_subtype, months)
-    start, end, covered = window
+    start, end, covered, data_start = window
 
     where, params = _sold_filter(city, property_subtype, start, end, zip_code)
     rows = query(
@@ -180,7 +187,7 @@ def price_trend(city, property_subtype=DEFAULT_SUBTYPE, months=24, zip_code=None
         params,
     )
     if not rows:
-        return _no_data(city, property_subtype, months)
+        return _no_data(city, property_subtype, months, covered=covered)
 
     by_month = {r["month"]: _num(r["avg_price"], 0) for r in rows}
     out, prev = [], None
@@ -208,9 +215,11 @@ def price_trend(city, property_subtype=DEFAULT_SUBTYPE, months=24, zip_code=None
         "city": city,
         "property_subtype": property_subtype,
         "zip_code": zip_code,
-        "months": months,
+        "months": covered,  # months of data in the window; never the requested figure
+        "months_requested": months,
         "months_covered": covered,
-        "window_start": start,
+        "window_start": start,  # exclusive bound used in the SQL; may be earlier than the data
+        "data_start": data_start,  # where the data really begins: the date to show people
         "window_end": end,
         "yoy_available": any(m["yoy_pct"] is not None for m in out),  # needs 13+ months of history
         "trend": out,  # first and last month are usually partial (window edges)
@@ -224,7 +233,7 @@ def inventory(city, property_subtype=DEFAULT_SUBTYPE, months=12, zip_code=None):
     window = _data_window(months) if city and (zip_code or not zip_raw) else None
     if window is None:
         return _no_data(city, property_subtype, months, what="inventory")
-    start, end, covered = window
+    start, end, covered, data_start = window
 
     # rets_property uses its own legacy names: L_City, and L_Type_ for the subtype.
     active_where = "L_City = %s AND StandardStatus = %s AND L_Type_ = %s"
@@ -237,7 +246,7 @@ def inventory(city, property_subtype=DEFAULT_SUBTYPE, months=12, zip_code=None):
     sold = query(f"SELECT COUNT(*) AS n FROM california_sold WHERE {where}", params)
     active_count, sold_count = int(active[0]["n"]), int(sold[0]["n"])
     if active_count == 0 and sold_count == 0:
-        return _no_data(city, property_subtype, months, what="inventory")
+        return _no_data(city, property_subtype, months, what="inventory", covered=covered)
 
     # Months of supply = how long today's active listings would last at the recent sales pace.
     # The pace uses months_covered (not `months`) so a short data history isn't under-counted.
@@ -247,7 +256,8 @@ def inventory(city, property_subtype=DEFAULT_SUBTYPE, months=12, zip_code=None):
         "city": city,
         "property_subtype": property_subtype,
         "zip_code": zip_code,
-        "months": months,
+        "months": covered,
+        "months_requested": months,
         "months_covered": covered,
         "active_count": active_count,
         "sold_count": sold_count,

@@ -19,7 +19,7 @@ Options:
 - `--zip 91107`: narrow the city to one 5-digit ZIP.
 - `--type Condominium`: property subtype. Default is `SingleFamilyResidence`. Never mix subtypes; if the user doesn't say, use the default and tell them which type the numbers cover.
 - `--months N` (summary and inventory window, default 12) and `--trend-months N` (default 24).
-- `--json`: raw numbers instead of text.
+- `--json`: raw numbers instead of text. In it, `months` is the months of data actually covered and `months_requested` is the window that was asked for; report `months`, not `months_requested`.
 
 How to answer:
 

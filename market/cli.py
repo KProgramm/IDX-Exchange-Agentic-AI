@@ -33,7 +33,7 @@ def zip_label(r):
 
 def format_summary(s):
     return (
-        f"{s['city']}{zip_label(s)} | {s['property_subtype']} | {s['window_start']} to {s['window_end']} "
+        f"{s['city']}{zip_label(s)} | {s['property_subtype']} | {s['data_start']} to {s['window_end']} "
         f"({s['months_covered']} months of data)\n"
         f"  Sold: {s['sold_count']:,}\n"
         f"  Close price: avg {money(s['avg_close_price'])} | median {money(s['median_close_price'])}\n"

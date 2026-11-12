@@ -176,6 +176,42 @@ for name, fn in (("summary", stats.city_summary), ("trend", stats.price_trend), 
     out = run(fn, FakeDB(), None)
     check(f"{name}: None city -> no data", out["has_data"] is False)
 
+# 8b. The window label must come from the data, never from the requested window.
+# FakeDB's default data runs 2026-03-18 to 2026-09-17 (6.0 months); we ask for 12 and 24.
+from market import cli as market_cli  # noqa: E402
+
+short = FakeDB(sold_rows=rows, trend_rows=trend_rows, active=60, sold_count=120)
+asked = {"summary": (stats.city_summary, 12), "trend": (stats.price_trend, 24), "inventory": (stats.inventory, 12)}
+for name, (fn, requested) in asked.items():
+    out = run(fn, short, "Irvine", months=requested)
+    check(f"{name}: months label equals months_covered", out["months"] == out["months_covered"] == 6.0)
+    check(f"{name}: requested window kept separately", out["months_requested"] == requested)
+    check(f"{name}: label never echoes the requested {requested}", out["months"] != requested)
+for name, (fn, requested) in asked.items():
+    if name == "inventory":
+        continue
+    out = run(fn, short, "Irvine", months=requested)
+    check(f"{name}: data_start is where the data begins, not {requested} months back", out["data_start"] == "2026-03-18")
+    check(f"{name}: data_start never earlier than the first sale", out["data_start"] >= "2026-03-18")
+    check(f"{name}: SQL lower bound still the nominal window start", out["window_start"] < out["data_start"])
+
+s6 = run(stats.city_summary, short, "Irvine", months=12)
+header = market_cli.format_summary(s6)
+check("CLI header shows the data's real start date", "2026-03-18 to 2026-09-17" in header)
+check("CLI header does not show the nominal 12-month start", s6["window_start"] not in header)
+check("CLI header still says 6.0 months of data", "(6.0 months of data)" in header)
+
+full = FakeDB(sold_rows=rows, trend_rows=trend_rows, active=60, sold_count=120, window=("2020-01-01", "2026-09-17"))
+sf = run(stats.city_summary, full, "Irvine", months=12)
+check("full window: months label is 12 because the data covers 12", sf["months"] == sf["months_covered"] == 12.0)
+check("full window: data_start is the nominal start", sf["data_start"] == sf["window_start"] == "2025-09-17")
+
+for name, (fn, requested) in asked.items():
+    out = run(fn, FakeDB(window=("2026-03-18", "2026-09-17")), "Atlantis", months=requested)
+    check(f"{name}: no-data message uses months of data, not {requested}",
+          "6.0 months of data" in out["message"] and str(requested) not in out["message"])
+    check(f"{name}: no-data label equals months_covered", out["months"] == 6.0 and out["months_requested"] == requested)
+
 # 9. Live, read-only checks against MySQL (skipped when the DB can't be reached).
 try:
     from db.connection import query as real_query
@@ -198,7 +234,7 @@ if live:
     check("live: sold_count matches an independent COUNT(*)", s["sold_count"] == direct)
     check("live: window ignores typo dates", s["window_end"] <= str(__import__("datetime").date.today()))
     t = stats.price_trend("San Diego")
-    check("live: trend months sum to sold total", sum(m["sales"] for m in t["trend"]) == s["sold_count"] or s["months"] != t["months"])
+    check("live: trend months sum to sold total", sum(m["sales"] for m in t["trend"]) == s["sold_count"] or s["months_requested"] != t["months_requested"])
     check("live: some MoM values computed", any(m["mom_pct"] is not None for m in t["trend"]))
     pz = stats.city_summary("Pasadena", zip_code="91107")
     check("live: Pasadena 91107 is a subset of Pasadena", pz["has_data"] and pz["sold_count"] < stats.city_summary("Pasadena")["sold_count"])
